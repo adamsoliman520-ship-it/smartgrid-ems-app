@@ -34,10 +34,10 @@ else:
 
 st.sidebar.subheader("Pas & bornes")
 dt_min = st.sidebar.slider("dt (min)", 1, 30, 5, step=1)
-nb_bornes = st.sidebar.slider("Nombre de bornes", 1, 20, 6, step=1)
+nb_bornes = st.sidebar.slider("Nombre de bornes", 1, 40, 6, step=1)
 P_borne_uni_max = st.sidebar.slider("P max par VE (kW)", 3.0, 50.0, 22.0, step=0.5)
-P_borne_tot_max = st.sidebar.slider("P totale VE (kW)", 10.0, 500.0, 132.0, step=1.0)
-P_grid_max = st.sidebar.slider("P max réseau (kW)", 50.0, 800.0, 300.0, step=10.0)
+P_borne_tot_max = st.sidebar.slider("P totale VE (kW)", 10.0, 800.0, 132.0, step=1.0)
+P_grid_max = st.sidebar.slider("P max réseau (kW)", 50.0, 1200.0, 300.0, step=10.0)
 
 st.sidebar.subheader("Tarifs")
 tariff_hp = st.sidebar.number_input("Tarif HP (€/kWh)", value=0.24, step=0.01, format="%.2f")
@@ -50,14 +50,21 @@ if bess_soc_max <= bess_soc_min:
     st.sidebar.error("SOC max doit être > SOC min")
     st.stop()
 
+st.sidebar.subheader("Courbe VE")
+max_ev_lines = st.sidebar.slider("Nb max de VE affichés (SOC)", 5, 200, 50, step=5)
+
 run = st.sidebar.button("▶️ Lancer simulation", type="primary")
 
 # -----------------------------
 # Simulation (cache)
 # -----------------------------
 @st.cache_data(show_spinner=False)
-def _run_one(scn: str, dt_min: int, nb_bornes: int, P_borne_uni_max: float, P_borne_tot_max: float, P_grid_max: float,
-             tariff_hp: float, tariff_hc: float, bess_soc_min: float, bess_soc_max: float):
+def _run_one(
+    scn: str, dt_min: int, nb_bornes: int,
+    P_borne_uni_max: float, P_borne_tot_max: float, P_grid_max: float,
+    tariff_hp: float, tariff_hc: float,
+    bess_soc_min: float, bess_soc_max: float
+):
     return simulate_day(
         scn,
         dt_min=dt_min,
@@ -71,6 +78,9 @@ def _run_one(scn: str, dt_min: int, nb_bornes: int, P_borne_uni_max: float, P_bo
         bess_soc_max_pct=bess_soc_max,
     )
 
+# -----------------------------
+# Plot helpers
+# -----------------------------
 def shade_hc(ax):
     ax.axvspan(22, 24, alpha=0.12)
     ax.axvspan(0, 6, alpha=0.12)
@@ -125,6 +135,37 @@ def plot_bess_soc(res: dict):
     plt.tight_layout()
     return fig
 
+def plot_ev_soc(res: dict, max_lines: int = 50):
+    """
+    Courbe SOC des VE. On trace un échantillon si trop de VE,
+    sinon l’app peut devenir lente sur Streamlit Cloud.
+    """
+    soc_ev = res["soc_ev_pct"]  # (n_steps, n_evs)
+    t_h = res["t_min"] / 60.0
+    n_evs = soc_ev.shape[1]
+
+    if n_evs == 0:
+        return None
+
+    if n_evs <= max_lines:
+        idx = np.arange(n_evs)
+    else:
+        idx = np.linspace(0, n_evs - 1, max_lines, dtype=int)
+
+    fig = plt.figure(figsize=(12, 5))
+    ax = plt.gca()
+    for i in idx:
+        ax.plot(t_h, soc_ev[:, i], linewidth=1.5, alpha=0.9)
+
+    shade_hc(ax)
+    format_time_axis(ax)
+    ax.set_ylim(0, 100)
+    ax.set_xlabel("Heure (h)")
+    ax.set_ylabel("SOC VE (%)")
+    ax.set_title(f"SOC des VE (échantillon {len(idx)}/{n_evs}) — {res['scenario']}")
+    plt.tight_layout()
+    return fig
+
 def plot_sci(res: dict):
     t_h = res["t_min"] / 60.0
     fig = plt.figure(figsize=(12, 4))
@@ -175,7 +216,7 @@ with st.spinner("Simulation en cours..."):
     ]
 
 # -----------------------------
-# Résultats
+# KPI + Audit
 # -----------------------------
 st.subheader("KPI")
 
@@ -191,14 +232,12 @@ for r in results:
         "SOC_BESS_min_%": round(float(np.min(r["bess_soc_pct"])), 2),
         "SOC_BESS_max_%": round(float(np.max(r["bess_soc_pct"])), 2),
     })
-kpi_df = pd.DataFrame(kpi_rows)
-st.dataframe(kpi_df, use_container_width=True)
+st.dataframe(pd.DataFrame(kpi_rows), use_container_width=True)
 
 st.subheader("Audit contraintes")
 audit_big = audit_all_scenarios(results)
 st.dataframe(audit_big, use_container_width=True)
 
-# Download audit CSV
 st.download_button(
     "⬇️ Télécharger Audit (CSV)",
     data=audit_big.to_csv(index=False).encode("utf-8"),
@@ -214,12 +253,21 @@ st.subheader("Graphiques")
 if mode == "1 scénario":
     r = results[0]
     c1, c2 = st.columns(2)
+
     with c1:
         st.pyplot(plot_flux(r), clear_figure=True)
         st.pyplot(plot_sci(r), clear_figure=True)
+
     with c2:
         st.pyplot(plot_bess_soc(r), clear_figure=True)
         st.pyplot(plot_cost(r), clear_figure=True)
+
+    st.markdown("### SOC des véhicules (VE)")
+    fig_ev = plot_ev_soc(r, max_lines=int(max_ev_lines))
+    if fig_ev is None:
+        st.info("Aucun VE dans ce scénario (ou données non disponibles).")
+    else:
+        st.pyplot(fig_ev, clear_figure=True)
 
     ts = results_timeseries_df(r)
     st.download_button(
@@ -269,3 +317,5 @@ else:
     ax.legend(ncol=2)
     plt.tight_layout()
     st.pyplot(fig, clear_figure=True)
+
+    st.info("En mode comparaison, la courbe SOC des VE n’est pas affichée (trop chargée). Mets '1 scénario' pour la voir.")
