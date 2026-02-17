@@ -217,6 +217,7 @@ if mode == "1 scénario":
     with c1:
         st.pyplot(plot_flux(r), clear_figure=True)
         st.pyplot(plot_sci(r), clear_figure=True)
+        st.pyplot(soc_ev(r), clear_figure=True)
     with c2:
         st.pyplot(plot_bess_soc(r), clear_figure=True)
         st.pyplot(plot_cost(r), clear_figure=True)
